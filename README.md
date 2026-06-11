@@ -37,6 +37,19 @@ set, or name. Rows show grade, setter, board/angle, repeat count and rating;
 **Random problem** picks from the current filter. Tapping a problem loads it
 onto the board — and sends it straight to the wall if connected.
 
+## Hold photos
+
+If a `holds/` directory sits next to `index.html` (written by
+moonboard-dataset's `fetch_hold_layouts.py`), the board renders the **actual
+hold photos** at each position — rotation and all — and painted/lit holds
+become colored rings around them. The layout switches automatically to match
+the board of whatever problem you load; a "Hold photos" toggle under the grid
+turns it off. Layout format: `holds/index.json` maps setup slugs to labels,
+`holds/<slug>.json` is `{"label": …, "cells": {"A1": ["h203.png", 90], …}}`
+with images in `holds/img/`. Photos are cached by the service worker, so they
+work offline too. Without `holds/` the grid just stays plain — nothing to
+configure.
+
 ## problems.json (`moonlink/2` format)
 
 ```json

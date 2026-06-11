@@ -1,4 +1,4 @@
-const CACHE = "moonlink-v2";
+const CACHE = "moonlink-v3";
 const ASSETS = [
   ".",
   "index.html",
@@ -42,6 +42,19 @@ self.addEventListener("fetch", e => {
       }).catch(() =>
         caches.match(e.request).then(hit => hit || caches.match("index.html"))
       )
+    );
+    return;
+  }
+  // hold photos/layouts: cache-first with runtime fill, so boards render offline
+  if (new URL(e.request.url).pathname.includes("/holds/")) {
+    e.respondWith(
+      caches.match(e.request).then(hit => hit || fetch(e.request).then(r => {
+        if (r.ok) {
+          const copy = r.clone();
+          caches.open(CACHE).then(c => c.put(e.request, copy));
+        }
+        return r;
+      }))
     );
     return;
   }
