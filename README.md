@@ -39,16 +39,21 @@ onto the board — and sends it straight to the wall if connected.
 
 ## Hold photos
 
-If a `holds/` directory sits next to `index.html` (written by
-moonboard-dataset's `fetch_hold_layouts.py`), the board renders the **actual
-hold photos** at each position — rotation and all — and painted/lit holds
-become colored rings around them. The layout switches automatically to match
-the board of whatever problem you load; a "Hold photos" toggle under the grid
-turns it off. Layout format: `holds/index.json` maps setup slugs to labels,
-`holds/<slug>.json` is `{"label": …, "cells": {"A1": ["h203.png", 90], …}}`
-with images in `holds/img/`. Photos are cached by the service worker, so they
-work offline too. Without `holds/` the grid just stays plain — nothing to
-configure.
+Drop a **hold-photo zip** onto the library zone (the same drop zone as a
+problems file) and the board renders the **actual hold photos** at each
+position — rotation and all — with painted/lit holds shown as colored rings
+around them. The layout switches automatically to match the board of whatever
+problem you load; a "Hold photos" toggle under the grid turns it off. The zip
+is remembered in IndexedDB, so it persists across reloads and works offline —
+import it once.
+
+moonboard-dataset's `fetch_hold_layouts.py` produces that zip
+(`data/moonlink_holds.zip`). Format: a flat zip of `index.json` (setup slug →
+label), one `<slug>.json` per board
+(`{"label": …, "cells": {"A1": ["h203.png", 90], …}}`), and the hold images
+under `img/`. Entries may be stored or deflated. As a fallback, a `holds/`
+directory served next to `index.html` (same files) is auto-loaded too. Without
+either, the grid just stays plain — nothing to configure.
 
 ## problems.json (`moonlink/2` format)
 

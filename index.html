@@ -263,8 +263,8 @@
         <summary>Problem library</summary>
         <div class="body">
           <div class="drop" id="drop">
-            <b>Drop problems.json here</b> or tap to choose a file
-            <input type="file" id="fileInput" accept=".json,application/json" hidden>
+            <b>Drop problems.json or holds .zip here</b> or tap to choose a file
+            <input type="file" id="fileInput" accept=".json,application/json,.zip,application/zip" hidden>
           </div>
           <div class="libfilters" id="libFilters" style="display:none">
             <input type="text" id="libSearch" class="full" placeholder="Search name or setter">
@@ -708,47 +708,131 @@ function loadProblem(p){
   else toast("Loaded: "+p.name);
 }
 
-// --- hold photos (holds/{setup}.json + holds/img/*, written by moonboard-dataset) ---
-let holdIndex=null, holdLayouts={}, curLayoutSlug="";
+// --- hold photos ---
+// Imported from moonboard-dataset's moonlink_holds.zip (index.json + per-board
+// {label,cells} manifests + img/*.png). Kept in memory + persisted to
+// IndexedDB; a holds/ dir served next to the app is used as a fallback.
 let photosOn=localStorage.getItem("moonlink.photos")!=="0";
+let curLayoutSlug="";
 const slugify=s=>(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
-async function holdsIndex(){
-  if(holdIndex!==null) return holdIndex;
-  if(!location.protocol.startsWith("http")) return (holdIndex={});
-  try{const r=await fetch("holds/index.json"); holdIndex=r.ok?await r.json():{};}
-  catch(e){holdIndex={};}
-  return holdIndex;
+const holdsStore={mode:null,index:{},layouts:{},imgURL:{}};   // mode: import|served
+
+function holdImgSrc(file){
+  return holdsStore.mode==="import" ? (holdsStore.imgURL[file]||"") : "holds/img/"+file;
+}
+async function ensureIndex(){
+  if(holdsStore.mode) return holdsStore.index;
+  if(!location.protocol.startsWith("http")) return holdsStore.index;
+  try{
+    const r=await fetch("holds/index.json");
+    if(r.ok){ holdsStore.index=await r.json(); holdsStore.mode="served"; }
+  }catch(e){}
+  return holdsStore.index;
+}
+async function ensureLayout(slug){
+  if(holdsStore.layouts[slug]) return holdsStore.layouts[slug];
+  if(holdsStore.mode==="served"){
+    try{const r=await fetch("holds/"+slug+".json"); if(r.ok) holdsStore.layouts[slug]=await r.json();}catch(e){}
+  }
+  return holdsStore.layouts[slug];
 }
 async function setBoardPhotos(label){
-  const idx=await holdsIndex(), slug=slugify(label);
-  if(!idx[slug]) return;                 // keep showing the last known board
+  const idx=await ensureIndex(), slug=slugify(label);
+  if(!idx[slug]) return;                 // unknown board — keep last layout
   if(slug!==curLayoutSlug){
-    if(!holdLayouts[slug]){
-      try{
-        const r=await fetch("holds/"+slug+".json");
-        if(!r.ok) return;
-        holdLayouts[slug]=await r.json();
-      }catch(e){return;}
-    }
+    if(!await ensureLayout(slug)) return;
     curLayoutSlug=slug;
   }
   $("photoRow").style.display="";
   applyHoldPhotos();
 }
 function applyHoldPhotos(){
-  const lay=holdLayouts[curLayoutSlug];
+  const lay=holdsStore.layouts[curLayoutSlug];
   document.querySelectorAll(".cell").forEach(cell=>{
     const old=cell.querySelector("img.hph"); if(old) old.remove();
     if(!photosOn||!lay) return;
     const ent=lay.cells[cell.getAttribute("aria-label")];
     if(!ent) return;
+    const src=holdImgSrc(ent[0]); if(!src) return;
     const img=document.createElement("img");
-    img.className="hph"; img.src="holds/img/"+ent[0]; img.alt="";
+    img.className="hph"; img.src=src; img.alt="";
     if(ent[1]) img.style.transform="rotate("+ent[1]+"deg)";
     cell.appendChild(img);
   });
   board.classList.toggle("photos",photosOn&&!!lay);
   $("photoSetup").textContent=lay?"· "+lay.label:"";
+}
+
+// minimal zip reader (central directory; stored + deflate-raw) — no deps
+async function unzip(buf){
+  const u8=new Uint8Array(buf), dv=new DataView(buf), td=new TextDecoder();
+  let eo=-1;
+  for(let i=u8.length-22;i>=0;i--){ if(dv.getUint32(i,true)===0x06054b50){eo=i;break;} }
+  if(eo<0) throw new Error("not a zip");
+  let off=dv.getUint32(eo+16,true); const count=dv.getUint16(eo+10,true);
+  const entries=[];
+  for(let n=0;n<count;n++){
+    if(dv.getUint32(off,true)!==0x02014b50) break;
+    const method=dv.getUint16(off+10,true);
+    const compSize=dv.getUint32(off+20,true);
+    const nameLen=dv.getUint16(off+28,true);
+    const extraLen=dv.getUint16(off+30,true);
+    const cmtLen=dv.getUint16(off+32,true);
+    const lho=dv.getUint32(off+42,true);
+    const name=td.decode(u8.subarray(off+46,off+46+nameLen));
+    entries.push({name,method,compSize,lho});
+    off+=46+nameLen+extraLen+cmtLen;
+  }
+  const out={};
+  for(const e of entries){
+    if(e.name.endsWith("/")) continue;
+    const lNameLen=dv.getUint16(e.lho+26,true), lExtraLen=dv.getUint16(e.lho+28,true);
+    const start=e.lho+30+lNameLen+lExtraLen;
+    const comp=u8.subarray(start,start+e.compSize);
+    if(e.method===0){ out[e.name]=comp.slice(); }
+    else if(e.method===8 && typeof DecompressionStream!=="undefined"){
+      const s=new Blob([comp]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      out[e.name]=new Uint8Array(await new Response(s).arrayBuffer());
+    } else throw new Error("unsupported compression "+e.method);
+  }
+  return out;
+}
+function setHoldAssets({index,layouts,images}){
+  Object.values(holdsStore.imgURL).forEach(u=>{try{URL.revokeObjectURL(u);}catch(e){}});
+  holdsStore.mode="import"; holdsStore.index=index; holdsStore.layouts=layouts; holdsStore.imgURL={};
+  for(const [base,blob] of Object.entries(images||{})) holdsStore.imgURL[base]=URL.createObjectURL(blob);
+  curLayoutSlug="";
+  $("photoRow").style.display="";
+  const cur=library[0]&&library[0].setup;
+  if(cur){ setBoardPhotos(cur); }
+  else { const s=Object.keys(layouts)[0]; if(s){curLayoutSlug=s; applyHoldPhotos();} }
+}
+async function importHoldsZip(buf){
+  let files; try{files=await unzip(buf);}catch(e){toast("Couldn't read that zip");return false;}
+  const td=new TextDecoder();
+  let index=null; const layouts={}, images={};
+  for(const [name,bytes] of Object.entries(files)){
+    const base=name.split("/").pop();
+    if(base==="index.json") index=JSON.parse(td.decode(bytes));
+    else if(name.indexOf("/")<0 && base.endsWith(".json")) layouts[base.replace(/\.json$/,"")]=JSON.parse(td.decode(bytes));
+    else if(/(^|\/)img\//.test(name) && base.endsWith(".png")) images[base]=new Blob([bytes],{type:"image/png"});
+  }
+  if(!Object.keys(layouts).length){toast("No hold layouts in that zip");return false;}
+  if(!index){ index={}; for(const [s,l] of Object.entries(layouts)) index[s]=l.label||s; }
+  setHoldAssets({index,layouts,images});
+  idbSet("holds",{index,layouts,images,when:Date.now()}).catch(()=>{});
+  const nb=Object.keys(index).length;
+  toast("Hold photos imported ("+nb+" board"+(nb===1?"":"s")+")");
+  return true;
+}
+async function initHolds(){
+  try{
+    const saved=await idbGet("holds");
+    if(saved&&saved.index&&saved.layouts&&Object.keys(saved.layouts).length){
+      setHoldAssets(saved); return;
+    }
+  }catch(e){}
+  ensureIndex();   // fall back to a served holds/ dir if one exists
 }
 
 // --- library persistence (IndexedDB) + auto-load of a served problems.json ---
@@ -816,13 +900,16 @@ $("flipS").onchange=e=>{flipS=e.target.checked;refreshOut();};
 $("testPosBtn").onclick=()=>{const n=parseInt($("testPos").value,10);if(n>=1&&n<=198){writeString("l#P"+n+"#");toast("Lit position "+n);}else toast("Enter 1–198");};
 $("testCellBtn").onclick=()=>{const c=parseCell($("testCell").value);if(c){writeString("l#P"+posFor(c.col,c.row)+"#");toast("Lit "+$("testCell").value.toUpperCase());}else toast("Enter a cell like A1");};
 
-// library events
-const ingestFile=f=>f.text().then(t=>{ if(ingest(t,f.name||"file")) persistLibrary(); });
+// library events — drop zone takes a problems JSON or a holds .zip
+function handleFile(f){
+  if(/\.zip$/i.test(f.name)||f.type==="application/zip"){ f.arrayBuffer().then(importHoldsZip); return; }
+  f.text().then(t=>{ if(ingest(t,f.name||"file")) persistLibrary(); });
+}
 $("drop").onclick=()=>$("fileInput").click();
-$("fileInput").onchange=e=>{const f=e.target.files[0]; if(f) ingestFile(f);};
+$("fileInput").onchange=e=>{const f=e.target.files[0]; if(f) handleFile(f);};
 ["dragover","dragenter"].forEach(ev=>$("drop").addEventListener(ev,e=>{e.preventDefault();$("drop").classList.add("over");}));
 ["dragleave"].forEach(ev=>$("drop").addEventListener(ev,e=>{e.preventDefault();$("drop").classList.remove("over");}));
-$("drop").addEventListener("drop",e=>{e.preventDefault();$("drop").classList.remove("over");const f=e.dataTransfer.files[0];if(f)ingestFile(f);});
+$("drop").addEventListener("drop",e=>{e.preventDefault();$("drop").classList.remove("over");const f=e.dataTransfer.files[0];if(f)handleFile(f);});
 $("libSearch").addEventListener("input",resetList);
 ["libSort","libGradeMin","libGradeMax","libSetup","libAngle","libBench"]
   .forEach(id=>$(id).onchange=resetList);
@@ -835,6 +922,7 @@ $("photoTog").onchange=e=>{
   try{localStorage.setItem("moonlink.photos",photosOn?"1":"0");}catch(err){}
   applyHoldPhotos();
 };
+initHolds();
 initLibrary();
 
 // PWA: register service worker + handle install prompt
