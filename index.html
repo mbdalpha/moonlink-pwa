@@ -88,16 +88,15 @@
   .hold.e{background:var(--finish);border-color:transparent;
     box-shadow:0 0 7px 1px rgba(255,66,66,.85),0 0 16px 4px rgba(255,66,66,.4)}
   .lit{animation:pulse 2.6s ease-in-out infinite}
-  /* hold photos: image under each cell, painted holds become rings over it */
-  .cell img.hph{position:absolute;inset:2%;width:96%;height:96%;object-fit:contain;
-    pointer-events:none;user-select:none}
-  .board.photos .hold{position:relative;z-index:1;background:transparent;
-    border-color:rgba(255,255,255,.04)}
+  /* hold photos: dimmed photo sits behind each cell as context; the climb's
+     start/move/finish stay as bright solid dots on top so it reads on a phone */
+  .cell img.hph{position:absolute;inset:8%;width:84%;height:84%;object-fit:contain;
+    pointer-events:none;user-select:none;opacity:.45;z-index:0}
+  .board.photos .hold{position:relative;z-index:1;width:46%;height:46%;
+    background:transparent;border-color:rgba(255,255,255,.12)}
   .board.photos .cell:hover .hold{background:rgba(255,255,255,.08);
-    border-color:rgba(255,255,255,.3)}
-  .board.photos .hold.s{background:rgba(41,227,106,.15);border:2px solid var(--start)}
-  .board.photos .hold.p{background:rgba(45,156,255,.15);border:2px solid var(--move)}
-  .board.photos .hold.e{background:rgba(255,66,66,.15);border:2px solid var(--finish)}
+    border-color:rgba(255,255,255,.35)}
+  .board.photos .hold.s,.board.photos .hold.p,.board.photos .hold.e{width:62%;height:62%}
   @keyframes pulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.22)}}
 
   /* Controls */
@@ -205,10 +204,13 @@
   <div class="grid2">
     <div class="boardcard">
       <div class="board" id="board" aria-label="MoonBoard grid"></div>
-      <label class="togg" id="photoRow" style="display:none;margin:10px 0 0">
-        <input type="checkbox" id="photoTog"> Hold photos
-        <span id="photoSetup" style="color:var(--faint)"></span>
-      </label>
+      <div id="photoRow" style="display:none;margin:10px 0 0;align-items:center;gap:9px">
+        <label class="togg" style="margin:0;flex:1">
+          <input type="checkbox" id="photoTog"> Hold photos
+          <span id="photoSetup" style="color:var(--faint)"></span>
+        </label>
+        <button id="photoRemove" style="padding:6px 10px;font-size:12.5px">Remove</button>
+      </div>
     </div>
 
     <div>
@@ -743,7 +745,7 @@ async function setBoardPhotos(label){
     if(!await ensureLayout(slug)) return;
     curLayoutSlug=slug;
   }
-  $("photoRow").style.display="";
+  $("photoRow").style.display="flex";
   applyHoldPhotos();
 }
 function applyHoldPhotos(){
@@ -756,11 +758,22 @@ function applyHoldPhotos(){
     const src=holdImgSrc(ent[0]); if(!src) return;
     const img=document.createElement("img");
     img.className="hph"; img.src=src; img.alt="";
+    img.onerror=()=>img.remove();        // never leave a broken box on the grid
     if(ent[1]) img.style.transform="rotate("+ent[1]+"deg)";
     cell.appendChild(img);
   });
   board.classList.toggle("photos",photosOn&&!!lay);
   $("photoSetup").textContent=lay?"· "+lay.label:"";
+}
+function removeHoldPhotos(){
+  Object.values(holdsStore.imgURL).forEach(u=>{try{URL.revokeObjectURL(u);}catch(e){}});
+  holdsStore.mode=null; holdsStore.index={}; holdsStore.layouts={}; holdsStore.imgURL={};
+  curLayoutSlug="";
+  idbDel("holds").catch(()=>{});
+  document.querySelectorAll(".cell img.hph").forEach(i=>i.remove());
+  board.classList.remove("photos");
+  $("photoRow").style.display="none";
+  toast("Hold photos removed");
 }
 
 // minimal zip reader (central directory; stored + deflate-raw) — no deps
@@ -802,7 +815,7 @@ function setHoldAssets({index,layouts,images}){
   holdsStore.mode="import"; holdsStore.index=index; holdsStore.layouts=layouts; holdsStore.imgURL={};
   for(const [base,blob] of Object.entries(images||{})) holdsStore.imgURL[base]=URL.createObjectURL(blob);
   curLayoutSlug="";
-  $("photoRow").style.display="";
+  $("photoRow").style.display="flex";
   const cur=library[0]&&library[0].setup;
   if(cur){ setBoardPhotos(cur); }
   else { const s=Object.keys(layouts)[0]; if(s){curLayoutSlug=s; applyHoldPhotos();} }
@@ -902,10 +915,16 @@ $("flipS").onchange=e=>{flipS=e.target.checked;refreshOut();};
 $("testPosBtn").onclick=()=>{const n=parseInt($("testPos").value,10);if(n>=1&&n<=198){writeString("l#P"+n+"#");toast("Lit position "+n);}else toast("Enter 1–198");};
 $("testCellBtn").onclick=()=>{const c=parseCell($("testCell").value);if(c){writeString("l#P"+posFor(c.col,c.row)+"#");toast("Lit "+$("testCell").value.toUpperCase());}else toast("Enter a cell like A1");};
 
-// library events — drop zone takes a problems JSON or a holds .zip
-function handleFile(f){
-  if(/\.zip$/i.test(f.name)||f.type==="application/zip"){ f.arrayBuffer().then(importHoldsZip); return; }
-  f.text().then(t=>{ if(ingest(t,f.name||"file")) persistLibrary(); });
+// library events — drop zone takes a problems JSON or a holds .zip.
+// Detect the zip by its content (PK signature), not its name/MIME — Android
+// Chrome often hands over a generic name/type for a picked download.
+async function handleFile(f){
+  const buf=await f.arrayBuffer();
+  const sig=new Uint8Array(buf.slice(0,2));
+  const isZip=/\.zip$/i.test(f.name||"")||(sig[0]===0x50&&sig[1]===0x4B);
+  if(isZip){ importHoldsZip(buf); return; }
+  const t=new TextDecoder().decode(buf);
+  if(ingest(t,f.name||"file")) persistLibrary();
 }
 $("drop").onclick=()=>$("fileInput").click();
 $("fileInput").onchange=e=>{const f=e.target.files[0]; if(f) handleFile(f);};
@@ -924,6 +943,7 @@ $("photoTog").onchange=e=>{
   try{localStorage.setItem("moonlink.photos",photosOn?"1":"0");}catch(err){}
   applyHoldPhotos();
 };
+$("photoRemove").onclick=removeHoldPhotos;
 initHolds();
 initLibrary();
 

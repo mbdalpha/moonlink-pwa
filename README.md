@@ -40,12 +40,14 @@ onto the board — and sends it straight to the wall if connected.
 ## Hold photos
 
 Drop a **hold-photo zip** onto the library zone (the same drop zone as a
-problems file) and the board renders the **actual hold photos** at each
-position — rotation and all — with painted/lit holds shown as colored rings
-around them. The layout switches automatically to match the board of whatever
-problem you load; a "Hold photos" toggle under the grid turns it off. The zip
-is remembered in IndexedDB, so it persists across reloads and works offline —
-import it once.
+problems file) and the board shows the **actual hold photos** at each position
+— rotation and all — dimmed as context behind the climb, while the
+start/move/finish holds stay as bright glowing dots on top so the problem reads
+clearly even on a phone. The layout switches automatically to match the board
+of whatever problem you load; a "Hold photos" toggle under the grid turns it
+off and **Remove** clears it. The zip is remembered in IndexedDB, so it
+persists across reloads and works offline — import it once. (The zip is
+detected by its content, so a renamed file still imports.)
 
 moonboard-dataset's `fetch_hold_layouts.py` produces that zip
 (`data/moonlink_holds.zip`). Format: a flat zip of `index.json` (setup slug →
