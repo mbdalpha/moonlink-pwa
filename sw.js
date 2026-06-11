@@ -1,4 +1,4 @@
-const CACHE = "moonlink-v1";
+const CACHE = "moonlink-v2";
 const ASSETS = [
   ".",
   "index.html",
@@ -26,14 +26,26 @@ self.addEventListener("activate", e => {
   );
 });
 
-// Cache-first for the app shell; fall back to index.html for navigations offline.
+// problems.json is never cached here — the app persists the library in
+// IndexedDB, so offline still has it and online always sees a fresh dataset.
+// Navigations are network-first (so app updates propagate), everything else
+// cache-first.
 self.addEventListener("fetch", e => {
   if (e.request.method !== "GET") return;
+  if (new URL(e.request.url).pathname.endsWith("/problems.json")) return;
+  if (e.request.mode === "navigate") {
+    e.respondWith(
+      fetch(e.request).then(r => {
+        const copy = r.clone();
+        caches.open(CACHE).then(c => c.put(e.request, copy));
+        return r;
+      }).catch(() =>
+        caches.match(e.request).then(hit => hit || caches.match("index.html"))
+      )
+    );
+    return;
+  }
   e.respondWith(
-    caches.match(e.request).then(hit =>
-      hit || fetch(e.request).catch(() => {
-        if (e.request.mode === "navigate") return caches.match("index.html");
-      })
-    )
+    caches.match(e.request).then(hit => hit || fetch(e.request))
   );
 });

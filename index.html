@@ -158,6 +158,12 @@
   .prob .pname{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .prob .psetter{font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .prob .bench{color:#FFB23E;font-size:13px}
+  .prob .pstats{font-family:var(--mono);font-size:10.5px;color:var(--muted);
+    text-align:right;line-height:1.55;white-space:nowrap}
+  .prob .pstats .rep{color:var(--text)}
+  .librow{display:flex;gap:9px}
+  .librow button{flex:1}
+  #libMore{width:100%;margin-top:8px}
   footer{color:var(--faint);font-size:12px;text-align:center;margin-top:22px;line-height:1.7;font-family:var(--mono)}
   footer a{color:var(--muted)}
   .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);
@@ -248,13 +254,28 @@
           </div>
           <div class="libfilters" id="libFilters" style="display:none">
             <input type="text" id="libSearch" class="full" placeholder="Search name or setter">
-            <select id="libGrade"></select>
+            <select id="libSort" class="full">
+              <option value="repeats">Sort · most repeated</option>
+              <option value="gradeAsc">Sort · grade, easy first</option>
+              <option value="gradeDesc">Sort · grade, hard first</option>
+              <option value="rating">Sort · best rated</option>
+              <option value="newest">Sort · newest</option>
+              <option value="name">Sort · name A–Z</option>
+            </select>
+            <select id="libGradeMin"></select>
+            <select id="libGradeMax"></select>
             <select id="libSetup"></select>
+            <select id="libAngle"></select>
             <label class="togg full" style="margin:2px 0 0"><input type="checkbox" id="libBench"> Benchmarks only</label>
+            <div class="librow full">
+              <button id="libRandom">Random problem</button>
+              <button id="libClearBtn">Clear library</button>
+            </div>
           </div>
           <div class="libmeta" id="libMeta" style="display:none"></div>
           <div class="liblist" id="libList"></div>
-          <p class="hint">Tapping a problem loads it onto the board — and sends it instantly if you're connected. Library stays in memory for this session; re-drop the file next time.</p>
+          <button id="libMore" style="display:none">Show more</button>
+          <p class="hint">Tapping a problem loads it onto the board — and sends it instantly if you're connected. A dropped library is kept on this device; a <code>problems.json</code> served next to the app loads automatically.</p>
         </div>
       </details>
 
@@ -485,9 +506,10 @@ function saveCurrent(){
   writeStore(store); $("saveName").value=""; renderSaved(); toast("Saved “"+name+"”");
 }
 
-// --- problem library (in-memory) ---
-let library=[];
-const gradeOrder=["5","5+","6A","6A+","6B","6B+","6C","6C+","7A","7A+","7B","7B+","7C","7C+","8A","8A+","8B","8B+","8C","8C+"];
+// --- problem library ---
+let library=[], libSource="", libGenerated="", libShown=0;
+const PAGE=200;
+const gradeOrder=["4","4+","5","5+","6A","6A+","6B","6B+","6C","6C+","7A","7A+","7B","7B+","7C","7C+","8A","8A+","8B","8B+","8C","8C+","9A"];
 
 function collectProblems(j){           // flatten the various scraper wrappers into problem objects
   const out=[];
@@ -508,25 +530,61 @@ function collectProblems(j){           // flatten the various scraper wrappers i
   }
   return out;
 }
+function holdsFromMoves(moves){
+  const out=[];
+  if(typeof moves==="string"){         // raw scraper packing: "s~G5~|l~A16~|e~C18~"
+    moves.split("|").forEach(tok=>{
+      const m=/^([slre])~([A-Ka-k]\d{1,2})~$/.exec(tok.trim());
+      if(!m) return;
+      const c=parseCell(m[2]); if(!c) return;
+      out.push({k:key(c.col,c.row),t:m[1]==="s"?"s":m[1]==="e"?"e":"p"});
+    });
+    return out;
+  }
+  (moves||[]).forEach(m=>{
+    const c=parseCell(m.Description||m.description||"");
+    if(!c) return;
+    const t=(m.IsStart||m.isStart)?"s":(m.IsEnd||m.isEnd)?"e":"p";
+    out.push({k:key(c.col,c.row),t});
+  });
+  return out;
+}
 function normalizeProblems(json){
   return collectProblems(json).map(p=>{
-    const moves=p.Moves||p.moves||[];
-    const holds=[];
-    moves.forEach(m=>{
-      const c=parseCell(m.Description||m.description||"");
-      if(!c) return;
-      const t=(m.IsStart||m.isStart)?"s":(m.IsEnd||m.isEnd)?"e":"p";
-      holds.push({k:key(c.col,c.row),t});
-    });
-    const setup=(p.MoonBoardConfiguration&&p.MoonBoardConfiguration.Description)
-      ||(p.Holdsetup&&p.Holdsetup.Description)||(p.HoldSetup&&p.HoldSetup.Description)||p.Setup||"—";
+    const holds=holdsFromMoves(p.Moves||p.moves);
+    const cfgs=Array.isArray(p.configurations)?p.configurations:[];
+    const cfg=cfgs.find(c=>c.configuration===c.primaryAngle)||cfgs[0]||{};
+    const setup=(p.Holdsetup&&p.Holdsetup.Description)
+      ||(p.HoldSetup&&p.HoldSetup.Description)||p.Setup
+      ||(p.MoonBoardConfiguration&&p.MoonBoardConfiguration.Description)||"—";
+    const mbc=(p.MoonBoardConfiguration&&p.MoonBoardConfiguration.Description)||cfg.configuration||"";
+    const am=/(\d+\s*°)/.exec(mbc);
     const setterObj=p.Setter;
-    const setter=(setterObj&&(setterObj.Nickname||setterObj.Firstname))||(typeof setterObj==="string"?setterObj:"");
+    const setter=(setterObj&&(setterObj.Nickname||setterObj.Firstname))||(typeof setterObj==="string"?setterObj:"")||p.setter||"";
     return {
       name:p.Name||p.name||"Untitled",
-      grade:(p.Grade||p.UserGrade||p.grade||"?"),
-      setter, bench:!!(p.IsBenchmark||p.isBenchmark),
-      setup:typeof setup==="string"?setup:"—", holds
+      grade:(p.Grade||p.UserGrade||p.grade||cfg.grade||"?"),
+      ugrade:p.UserGrade||cfg.userGrade||"",
+      setter, bench:!!(p.IsBenchmark||p.isBenchmark||cfg.isBenchmark),
+      repeats:+(p.Repeats||cfg.repeats||0)||0,
+      rating:+(p.UserRating||cfg.userRating||0)||0,
+      date:String(p.DateInserted||p.dateInserted||"").slice(0,10),
+      setup:typeof setup==="string"?setup:"—",
+      angle:am?am[1].replace(/\s+/g,""):"", holds
+    };
+  }).filter(p=>p.holds.length);
+}
+function fromCompact(j){               // "moonlink/2" — what moonboard-dataset's to_moonlink.py writes
+  const types=["s","p","e"];
+  return (j.problems||[]).map(p=>{
+    const holds=[];
+    String(p.h||"").split("|").forEach((sec,i)=>sec.split(",").forEach(tok=>{
+      const c=parseCell(tok); if(c) holds.push({k:key(c.col,c.row),t:types[i]||"p"});
+    }));
+    return {
+      name:p.n||"Untitled", grade:p.g||"?", ugrade:p.u||"",
+      setter:p.s||"", bench:!!p.b, repeats:+p.r||0, rating:+p.t||0,
+      date:p.d||"", setup:p.bo||"—", angle:p.a||"", holds
     };
   }).filter(p=>p.holds.length);
 }
@@ -535,39 +593,150 @@ function fillSelect(sel,values,allLabel,sort){
   const arr=[...new Set(values)].filter(Boolean); if(sort) arr.sort(sort);
   sel.innerHTML=""; const o=document.createElement("option"); o.value=""; o.textContent=allLabel; sel.appendChild(o);
   arr.forEach(v=>{const op=document.createElement("option");op.value=v;op.textContent=v;sel.appendChild(op);});
+  return arr.length;
 }
 function escapeHtml(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
-function ingest(text){
-  let parsed; try{parsed=JSON.parse(text);}catch(e){toast("Couldn't parse that JSON");return;}
-  library=normalizeProblems(parsed);
-  if(!library.length){toast("No problems found in that file");return;}
-  fillSelect($("libGrade"),library.map(p=>p.grade),"All grades",(a,b)=>gradeKey(a)-gradeKey(b));
-  fillSelect($("libSetup"),library.map(p=>p.setup),"All setups",null);
-  $("libFilters").style.display=""; $("libMeta").style.display="";
-  renderLibrary(); toast("Loaded "+library.length+" problems");
+
+function ingestParsed(parsed,source){
+  const lib=(parsed&&typeof parsed.format==="string"&&parsed.format.indexOf("moonlink/")===0)
+    ?fromCompact(parsed):normalizeProblems(parsed);
+  if(!lib.length){toast("No problems found in that file");return false;}
+  library=lib; libSource=source||"file";
+  libGenerated=(parsed&&parsed.generated)||"";
+  buildLibFilters();
+  resetList();
+  return true;
 }
-function renderLibrary(){
+function ingest(text,source){
+  let parsed; try{parsed=JSON.parse(text);}catch(e){toast("Couldn't parse that JSON");return false;}
+  if(!ingestParsed(parsed,source)) return false;
+  toast("Loaded "+library.length+" problems");
+  return true;
+}
+function buildLibFilters(){
+  const grades=[...new Set(library.map(p=>p.grade))].filter(g=>gradeKey(g)<999)
+    .sort((a,b)=>gradeKey(a)-gradeKey(b));
+  const fill=(sel,label)=>{
+    sel.innerHTML=""; const o=document.createElement("option"); o.value=""; o.textContent=label; sel.appendChild(o);
+    grades.forEach(g=>{const op=document.createElement("option");op.value=g;op.textContent=g;sel.appendChild(op);});
+  };
+  fill($("libGradeMin"),"Min grade"); fill($("libGradeMax"),"Max grade");
+  const nSetups=fillSelect($("libSetup"),library.map(p=>p.setup),"All boards",null);
+  const nAngles=fillSelect($("libAngle"),library.map(p=>p.angle),"All angles",(a,b)=>parseInt(a)-parseInt(b));
+  $("libSetup").style.display=nSetups>1?"":"none";
+  $("libAngle").style.display=nAngles>1?"":"none";
+  $("libFilters").style.display=""; $("libMeta").style.display="";
+}
+const libSorts={
+  repeats:(a,b)=>b.repeats-a.repeats||gradeKey(a.grade)-gradeKey(b.grade),
+  gradeAsc:(a,b)=>gradeKey(a.grade)-gradeKey(b.grade)||b.repeats-a.repeats,
+  gradeDesc:(a,b)=>{const x=gradeKey(a.grade),y=gradeKey(b.grade);   // unknown grades last
+    return (y===999?-1:y)-(x===999?-1:x)||b.repeats-a.repeats;},
+  rating:(a,b)=>b.rating-a.rating||b.repeats-a.repeats,
+  newest:(a,b)=>(b.date||"").localeCompare(a.date||"")||b.repeats-a.repeats,
+  name:(a,b)=>a.name.localeCompare(b.name),
+};
+function libMatches(){
   const q=$("libSearch").value.trim().toLowerCase();
-  const g=$("libGrade").value, su=$("libSetup").value, bench=$("libBench").checked;
-  const matches=library.filter(p=>
-    (!g||p.grade===g)&&(!su||p.setup===su)&&(!bench||p.bench)&&
-    (!q||p.name.toLowerCase().includes(q)||p.setter.toLowerCase().includes(q)));
-  const CAP=200;
-  $("libMeta").textContent=matches.length+" match"+(matches.length===1?"":"es")+(matches.length>CAP?" · showing first "+CAP:"");
+  const gmin=$("libGradeMin").value, gmax=$("libGradeMax").value;
+  const su=$("libSetup").value, an=$("libAngle").value, bench=$("libBench").checked;
+  const lo=gmin?gradeKey(gmin):-1, hi=gmax?gradeKey(gmax):Infinity;
+  const out=library.filter(p=>{
+    if(bench&&!p.bench) return false;
+    if(su&&p.setup!==su) return false;
+    if(an&&p.angle!==an) return false;
+    if(gmin||gmax){const gk=gradeKey(p.grade); if(gk<lo||gk>hi) return false;}
+    if(q&&!p.name.toLowerCase().includes(q)&&!p.setter.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  out.sort(libSorts[$("libSort").value]||libSorts.repeats);
+  return out;
+}
+function fmtCount(n){return n>=10000?Math.round(n/1000)+"k":n>=1000?(n/1000).toFixed(1)+"k":""+n;}
+function resetList(){libShown=PAGE; renderLibrary();}
+function renderLibrary(){
+  const matches=libMatches();
+  const srcNote=libSource?" · "+libSource:"";
+  $("libMeta").textContent=matches.length+" match"+(matches.length===1?"":"es")
+    +(matches.length>libShown?" · showing "+libShown:"")+srcNote;
   const list=$("libList"); list.innerHTML="";
-  matches.slice(0,CAP).forEach(p=>{
+  matches.slice(0,libShown).forEach(p=>{
     const b=document.createElement("button"); b.className="prob"; b.type="button";
+    const sub=[p.setter,p.setup,p.angle].filter(Boolean).join(" · ");
+    const stats=(p.repeats?`<span class="rep">${fmtCount(p.repeats)}×</span>`:"")
+      +(p.repeats&&p.rating?"<br>":"")+(p.rating?`★${p.rating}`:"");
     b.innerHTML=`<span class="grade">${escapeHtml(p.grade)}</span>`
       +`<span class="meta"><span class="pname">${escapeHtml(p.name)}</span>`
-      +`<span class="psetter">${escapeHtml([p.setter,p.setup].filter(Boolean).join(" · "))}</span></span>`
-      +(p.bench?`<span class="bench" title="Benchmark">★</span>`:``);
+      +`<span class="psetter">${escapeHtml(sub)}</span></span>`
+      +(p.bench?`<span class="bench" title="Benchmark">★</span>`:``)
+      +(stats?`<span class="pstats">${stats}</span>`:``);
     b.onclick=()=>loadProblem(p); list.appendChild(b);
   });
+  $("libMore").style.display=matches.length>libShown?"":"none";
+}
+function randomProblem(){
+  const matches=libMatches();
+  if(!matches.length){toast("No matches to pick from");return;}
+  loadProblem(matches[Math.floor(Math.random()*matches.length)]);
+}
+function clearLibrary(){
+  library=[]; libSource=""; libGenerated="";
+  idbDel("library").catch(()=>{});
+  $("libFilters").style.display="none"; $("libMeta").style.display="none";
+  $("libList").innerHTML=""; $("libMore").style.display="none";
+  toast("Library cleared");
 }
 function loadProblem(p){
   holds.clear(); p.holds.forEach(h=>holds.set(h.k,h.t)); repaintAll();
   if(rxChar){ writeString(buildString()); toast("Sent: "+p.name); }
   else toast("Loaded: "+p.name);
+}
+
+// --- library persistence (IndexedDB) + auto-load of a served problems.json ---
+function idbOpen(){
+  return new Promise((res,rej)=>{
+    if(typeof indexedDB==="undefined"){rej(new Error("no idb"));return;}
+    const r=indexedDB.open("moonlink",1);
+    r.onupgradeneeded=()=>r.result.createObjectStore("kv");
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+  });
+}
+function idbReq(mode,fn){
+  return idbOpen().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction("kv",mode), rq=fn(tx.objectStore("kv"));
+    tx.oncomplete=()=>{db.close();res(rq.result);};
+    tx.onerror=()=>{db.close();rej(tx.error);};
+  }));
+}
+const idbGet=k=>idbReq("readonly",s=>s.get(k));
+const idbSet=(k,v)=>idbReq("readwrite",s=>s.put(v,k));
+const idbDel=k=>idbReq("readwrite",s=>s.delete(k));
+
+function persistLibrary(){
+  idbSet("library",{library,source:libSource,generated:libGenerated,when:Date.now()}).catch(()=>{});
+}
+async function initLibrary(){
+  let savedGen="";
+  try{
+    const saved=await idbGet("library");
+    if(saved&&Array.isArray(saved.library)&&saved.library.length){
+      library=saved.library; libSource="saved on device";
+      libGenerated=savedGen=saved.generated||"";
+      buildLibFilters(); resetList();
+    }
+  }catch(e){}
+  if(!location.protocol.startsWith("http")) return;
+  try{
+    const r=await fetch("problems.json",{cache:"no-store"});
+    if(!r.ok) return;
+    const parsed=await r.json();
+    if(parsed&&parsed.generated&&parsed.generated===savedGen&&library.length){
+      libSource="problems.json"; renderLibrary(); return;   // already have this build
+    }
+    if(ingestParsed(parsed,"problems.json")){
+      persistLibrary(); toast("Library: "+library.length+" problems");
+    }
+  }catch(e){}
 }
 
 // --- wire up ---
@@ -588,13 +757,19 @@ $("testPosBtn").onclick=()=>{const n=parseInt($("testPos").value,10);if(n>=1&&n<
 $("testCellBtn").onclick=()=>{const c=parseCell($("testCell").value);if(c){writeString("l#P"+posFor(c.col,c.row)+"#");toast("Lit "+$("testCell").value.toUpperCase());}else toast("Enter a cell like A1");};
 
 // library events
+const ingestFile=f=>f.text().then(t=>{ if(ingest(t,f.name||"file")) persistLibrary(); });
 $("drop").onclick=()=>$("fileInput").click();
-$("fileInput").onchange=e=>{const f=e.target.files[0]; if(f) f.text().then(ingest);};
+$("fileInput").onchange=e=>{const f=e.target.files[0]; if(f) ingestFile(f);};
 ["dragover","dragenter"].forEach(ev=>$("drop").addEventListener(ev,e=>{e.preventDefault();$("drop").classList.add("over");}));
 ["dragleave"].forEach(ev=>$("drop").addEventListener(ev,e=>{e.preventDefault();$("drop").classList.remove("over");}));
-$("drop").addEventListener("drop",e=>{e.preventDefault();$("drop").classList.remove("over");const f=e.dataTransfer.files[0];if(f)f.text().then(ingest);});
-$("libSearch").addEventListener("input",renderLibrary);
-$("libGrade").onchange=renderLibrary; $("libSetup").onchange=renderLibrary; $("libBench").onchange=renderLibrary;
+$("drop").addEventListener("drop",e=>{e.preventDefault();$("drop").classList.remove("over");const f=e.dataTransfer.files[0];if(f)ingestFile(f);});
+$("libSearch").addEventListener("input",resetList);
+["libSort","libGradeMin","libGradeMax","libSetup","libAngle","libBench"]
+  .forEach(id=>$(id).onchange=resetList);
+$("libMore").onclick=()=>{libShown+=PAGE; renderLibrary();};
+$("libRandom").onclick=randomProblem;
+$("libClearBtn").onclick=clearLibrary;
+initLibrary();
 
 // PWA: register service worker + handle install prompt
 if("serviceWorker" in navigator && location.protocol.startsWith("http")){
