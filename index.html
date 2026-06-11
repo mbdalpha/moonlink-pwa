@@ -808,7 +808,9 @@ function setHoldAssets({index,layouts,images}){
   else { const s=Object.keys(layouts)[0]; if(s){curLayoutSlug=s; applyHoldPhotos();} }
 }
 async function importHoldsZip(buf){
-  let files; try{files=await unzip(buf);}catch(e){toast("Couldn't read that zip");return false;}
+  let files;
+  try{files=await unzip(buf);}
+  catch(e){ console.error("hold zip:",e); toast("Couldn't read that zip: "+(e.message||e)); return false; }
   const td=new TextDecoder();
   let index=null; const layouts={}, images={};
   for(const [name,bytes] of Object.entries(files)){

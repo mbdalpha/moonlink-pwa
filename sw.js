@@ -1,4 +1,4 @@
-const CACHE = "moonlink-v3";
+const CACHE = "moonlink-v4";
 const ASSETS = [
   ".",
   "index.html",
